@@ -199,8 +199,8 @@ class KGProcessor(DataProcessor):
         # Loops each tuple and can create negative examples (50% chance)
         count = 0
         for (i, line) in enumerate(lines): # i=index, line= tuple
-            if count == 1000: # only get 10,00
-                break
+            # if count == 1000: # only get 10,00
+            #     break
             count+=1
             head_ent_text = ent2text[line[0]]#finds match from entity2text to train head entities
             tail_ent_text = ent2text[line[2]]#finds match from entity2text to train tail entities
@@ -272,8 +272,8 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         # print("Hello")
         if ex_index % 10000 == 0 and print_info:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-        if ex_index == 1000: # TEMPORARY
-            break;
+        # if ex_index == 1000: # TEMPORARY
+        #     break;
         tokens_a = tokenizer.tokenize(example.text_a) # tokenizes the head
 
         tokens_b = None

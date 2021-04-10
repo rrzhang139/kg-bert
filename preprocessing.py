@@ -1,5 +1,6 @@
 
 # entities list for umls, YAGO3-10, FB15k-237, WN18RR, WN11, FB13
+# It executes this chunk for those
 with open('data/WN18RR/train.tsv', 'r') as f, open('data/WN18RR/test.tsv', 'r') as f1, open('data/WN18RR/dev.tsv', 'r') as f2, open('data/WN18RR/entities.txt', 'w') as f3:
     lines = f.readlines() + f1.readlines() + f2.readlines()
     entities = set()

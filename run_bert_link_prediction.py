@@ -16,7 +16,7 @@
 """BERT finetuning runner."""
 
 from __future__ import absolute_import, division, print_function
-
+import shutil
 import argparse
 import csv
 import logging
@@ -41,7 +41,7 @@ from pytorch_pretrained_bert.modeling import BertForSequenceClassification, Bert
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 
-os.environ['CUDA_VISIBLE_DEVICES']= '1'
+# os.environ['CUDA_VISIBLE_DEVICES']= '1'
 #torch.backends.cudnn.deterministic = True
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ class KGProcessor(DataProcessor):
     """Processor for knowledge graph data set."""
     def __init__(self):
         self.labels = set()
-    
+
     def get_train_examples(self, data_dir):
         """See base class."""
         return self._create_examples(
@@ -164,12 +164,12 @@ class KGProcessor(DataProcessor):
     def get_test_triples(self, data_dir):
         """Gets test triples."""
         return self._read_tsv(os.path.join(data_dir, "test.tsv"))
-
+    # lines are a list of tuples from line to line: We use this to match entities/relations with the text
     def _create_examples(self, lines, set_type, data_dir):
         """Creates examples for the training and dev sets."""
         # entity to text
         ent2text = {}
-        with open(os.path.join(data_dir, "entity2text.txt"), 'r') as f:
+        with open(os.path.join(data_dir, "entity2text.txt"), 'r') as f: # reading the data from text, and adding entity2text pairs
             ent_lines = f.readlines()
             for line in ent_lines:
                 temp = line.strip().split('\t')
@@ -185,7 +185,7 @@ class KGProcessor(DataProcessor):
                     #first_sent_end_position = temp[1].find(".")
                     ent2text[temp[0]] = temp[1]#[:first_sent_end_position + 1] 
 
-        entities = list(ent2text.keys())
+        entities = list(ent2text.keys()) # gets only entities
 
         rel2text = {}
         with open(os.path.join(data_dir, "relation2text.txt"), 'r') as f:
@@ -193,14 +193,18 @@ class KGProcessor(DataProcessor):
             for line in rel_lines:
                 temp = line.strip().split('\t')
                 rel2text[temp[0]] = temp[1]      
-
+    # Gets set of tuples
         lines_str_set = set(['\t'.join(line) for line in lines])
         examples = []
-        for (i, line) in enumerate(lines):
-            
-            head_ent_text = ent2text[line[0]]
-            tail_ent_text = ent2text[line[2]]
-            relation_text = rel2text[line[1]]
+        # Loops each tuple and can create negative examples (50% chance)
+        count = 0
+        for (i, line) in enumerate(lines): # i=index, line= tuple
+            if count == 1000: # only get 10,00
+                break
+            count+=1
+            head_ent_text = ent2text[line[0]]#finds match from entity2text to train head entities
+            tail_ent_text = ent2text[line[2]]#finds match from entity2text to train tail entities
+            relation_text = rel2text[line[1]]#finds match from rel2text to train relations
 
             if set_type == "dev" or set_type == "test":
 
@@ -216,6 +220,7 @@ class KGProcessor(DataProcessor):
                 
             elif set_type == "train":
                 guid = "%s-%s" % (set_type, i)
+                # print("IN TRAIN" + guid)
                 text_a = head_ent_text
                 text_b = relation_text
                 text_c = tail_ent_text 
@@ -224,20 +229,20 @@ class KGProcessor(DataProcessor):
 
                 rnd = random.random()
                 guid = "%s-%s" % (set_type + "_corrupt", i)
-                if rnd <= 0.5:
+                if rnd <= 0.5:# 50/50 chance of corrupting head OR tail: changing head/tail entity to negative exampe
                     # corrupting head
-                    for j in range(5):
+                    for j in range(5): # corrupt 5 heads
                         tmp_head = ''
                         while True:
                             tmp_ent_list = set(entities)
-                            tmp_ent_list.remove(line[0])
-                            tmp_ent_list = list(tmp_ent_list)
-                            tmp_head = random.choice(tmp_ent_list)
-                            tmp_triple_str = tmp_head + '\t' + line[1] + '\t' + line[2]
+                            tmp_ent_list.remove(line[0]) # Remove the first head entity out of all entities
+                            tmp_ent_list = list(tmp_ent_list) # convert to list
+                            tmp_head = random.choice(tmp_ent_list) # get random head from set of entities
+                            tmp_triple_str = tmp_head + '\t' + line[1] + '\t' + line[2] # create new negative example with corrupt head
                             if tmp_triple_str not in lines_str_set:
                                 break                    
                         tmp_head_text = ent2text[tmp_head]
-                        examples.append(
+                        examples.append( # Add NEW NEGATIVE EXAMPLE
                             InputExample(guid=guid, text_a=tmp_head_text, text_b=text_b, text_c = text_c, label="0"))       
                 else:
                     # corrupting tail
@@ -262,23 +267,26 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
     label_map = {label : i for i, label in enumerate(label_list)}
 
     features = []
+    # go through each real example (1), or negative (0)
     for (ex_index, example) in enumerate(examples):
+        # print("Hello")
         if ex_index % 10000 == 0 and print_info:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
-
-        tokens_a = tokenizer.tokenize(example.text_a)
+        if ex_index == 1000: # TEMPORARY
+            break;
+        tokens_a = tokenizer.tokenize(example.text_a) # tokenizes the head
 
         tokens_b = None
         tokens_c = None
 
-        if example.text_b and example.text_c:
+        if example.text_b and example.text_c: # if the example has a relation and tail
             tokens_b = tokenizer.tokenize(example.text_b)
             tokens_c = tokenizer.tokenize(example.text_c)
             # Modifies `tokens_a`, `tokens_b` and `tokens_c`in place so that the total
             # length is less than the specified length.
             # Account for [CLS], [SEP], [SEP], [SEP] with "- 4"
             #_truncate_seq_pair(tokens_a, tokens_b, max_seq_length - 3)
-            _truncate_seq_triple(tokens_a, tokens_b, tokens_c, max_seq_length - 4)
+            _truncate_seq_triple(tokens_a, tokens_b, tokens_c, max_seq_length - 4) # truncate the sequence
         else:
             # Account for [CLS] and [SEP] with "- 2"
             if len(tokens_a) > max_seq_length - 2:
@@ -308,21 +316,21 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
         tokens = ["[CLS]"] + tokens_a + ["[SEP]"]
         segment_ids = [0] * len(tokens)
 
-        if tokens_b:
+        if tokens_b: # since we are doing link prediciton, we need entity and tail
             tokens += tokens_b + ["[SEP]"]
             segment_ids += [1] * (len(tokens_b) + 1)
         if tokens_c:
             tokens += tokens_c + ["[SEP]"]
             segment_ids += [0] * (len(tokens_c) + 1)        
 
-        input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        input_ids = tokenizer.convert_tokens_to_ids(tokens) # converts words -> ids (001, 002) from the pretrained bert
 
         # The mask has 1 for real tokens and 0 for padding tokens. Only real
         # tokens are attended to.
         input_mask = [1] * len(input_ids)
 
         # Zero-pad up to the sequence length.
-        padding = [0] * (max_seq_length - len(input_ids))
+        padding = [0] * (max_seq_length - len(input_ids)) # for input seq that are shorter, pad them w 0s
         input_ids += padding
         input_mask += padding
         segment_ids += padding
@@ -349,7 +357,8 @@ def convert_examples_to_features(examples, label_list, max_seq_length, tokenizer
                               input_mask=input_mask,
                               segment_ids=segment_ids,
                               label_id=label_id))
-    return features
+    return features # return list of all feature 1. input_ids (goat: 120) 2. input_mask(1-real, 0-pad)
+                    # 3. segment_ids(00011000 , differentiates the sequence into three parts: head, rel, tail)
 
 
 def _truncate_seq_pair(tokens_a, tokens_b, max_length):
@@ -400,6 +409,7 @@ def compute_metrics(task_name, preds, labels):
 
 
 def main():
+    print("HERE")
     parser = argparse.ArgumentParser()
 
     ## Required parameters
@@ -504,7 +514,7 @@ def main():
     processors = {
         "kg": KGProcessor,
     }
-
+# Since we are just running on remote sheet server, our device is an object on which a torch Tensor will be allocated
     if args.local_rank == -1 or args.no_cuda:
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -531,7 +541,7 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-
+# To get determinism, set all gpus to same seed
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
@@ -539,7 +549,8 @@ def main():
         raise ValueError("At least one of `do_train` or `do_eval` must be True.")
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train:
-        raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
+        shutil.rmtree(args.output_dir)
+        # raise ValueError("Output directory ({}) already exists and is not empty.".format(args.output_dir))
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
@@ -549,12 +560,12 @@ def main():
         raise ValueError("Task not found: %s" % (task_name))
 
     processor = processors[task_name]()
-
+    # Gets the list of all tuples
     label_list = processor.get_labels(args.data_dir)
     num_labels = len(label_list)
 
     entity_list = processor.get_entities(args.data_dir)
-    #print(entity_list)
+    # print(entity_list)
 
     tokenizer = BertTokenizer.from_pretrained(args.bert_model, do_lower_case=args.do_lower_case)
 
@@ -562,19 +573,20 @@ def main():
     num_train_optimization_steps = 0
     if args.do_train:
         train_examples = processor.get_train_examples(args.data_dir)
+        # get examples in each batch size and multiply by epochs to get total optimization steps
         num_train_optimization_steps = int(
             len(train_examples) / args.train_batch_size / args.gradient_accumulation_steps) * args.num_train_epochs
         if args.local_rank != -1:
-            num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
+            num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size() # returns # optimization steps for each process in current group
 
     # Prepare model
     cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank))
-    model = BertForSequenceClassification.from_pretrained(args.bert_model,
+    model = BertForSequenceClassification.from_pretrained(args.bert_model, # creates bert classification model
               cache_dir=cache_dir,
-              num_labels=num_labels)
+              num_labels=num_labels) # Labels are binary: 1 or 0
     if args.fp16:
         model.half()
-    model.to(device)
+    model.to(device) # we allocate all model tensors to our sheet server device (cuda)
     if args.local_rank != -1:
         try:
             from apex.parallel import DistributedDataParallel as DDP
@@ -582,12 +594,12 @@ def main():
             raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
         model = DDP(model)
-    elif n_gpu > 1:
+    elif n_gpu > 1: # if theres more than one gpu on server, can run parallel
         model = torch.nn.DataParallel(model)
         #model = torch.nn.parallel.data_parallel(model)
     # Prepare optimizer
-    param_optimizer = list(model.named_parameters())
-    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+    param_optimizer = list(model.named_parameters()) # named_parameters are
+    no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']# apply weight decay to all parameters other than bias and layer norm
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
         {'params': [p for n, p in param_optimizer if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
@@ -611,22 +623,23 @@ def main():
                                              t_total=num_train_optimization_steps)        
 
     else:
-        optimizer = BertAdam(optimizer_grouped_parameters,
+        optimizer = BertAdam(optimizer_grouped_parameters, # optimization model
                              lr=args.learning_rate,
-                             warmup=args.warmup_proportion,
-                             t_total=num_train_optimization_steps)
+                             warmup=args.warmup_proportion, #
+                             t_total=num_train_optimization_steps) # gets the number of steps to optimize (total epoch optimizatinos)
 
     global_step = 0
     nb_tr_steps = 0
     tr_loss = 0
     if args.do_train:
-
+        # passes in the train_examples, so a list of InputExample objects (text_a = head, text_b = relation, text_c = tail)
         train_features = convert_examples_to_features(
             train_examples, label_list, args.max_seq_length, tokenizer)
         logger.info("***** Running training *****")
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
+        #creates a tensor of type long int
         all_input_ids = torch.tensor([f.input_ids for f in train_features], dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features], dtype=torch.long)
         all_segment_ids = torch.tensor([f.segment_ids for f in train_features], dtype=torch.long)
@@ -635,27 +648,28 @@ def main():
 
         train_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
         if args.local_rank == -1:
-            train_sampler = RandomSampler(train_data)
+            train_sampler = RandomSampler(train_data) #randomly permutes a batch of indices and yields next index/key to fetch
         else:
             train_sampler = DistributedSampler(train_data)
+            # Combines a dataset and a sampler, and provides an iterable over the given dataset. https://pytorch.org/docs/stable/data.html
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
-        model.train()
-        #print(model)
-        for _ in trange(int(args.num_train_epochs), desc="Epoch"):
+        model.train() #Puts in train mode. https://huggingface.co/transformers/training.html
+        print(model)
+        for _ in trange(int(args.num_train_epochs), desc="Epoch"): # every epoch
             tr_loss = 0
             nb_tr_examples, nb_tr_steps = 0, 0
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-                batch = tuple(t.to(device) for t in batch)
-                input_ids, input_mask, segment_ids, label_ids = batch
+                batch = tuple(t.to(device) for t in batch) # gets the batch of samples from dataloader
+                input_ids, input_mask, segment_ids, label_ids = batch # input_mask is used so padded ones (0) wont have any attention to them in encoder
 
                 # define a new function to compute loss values for both output_modes
-                logits = model(input_ids, segment_ids, input_mask, labels=None)
-                #print(logits, logits.shape)
-
+                logits = model(input_ids, segment_ids, input_mask, labels=None) # the vector of raw (non-normalized) predictions that a classification model generates
+                # print("The logits are: ", logits, logits.shape) # 32 x 2
+                # print(label_ids.view(-1))
                 loss_fct = CrossEntropyLoss()
-                loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1))
-
+                loss = loss_fct(logits.view(-1, num_labels), label_ids.view(-1)) # unsure of # rows
+                # logits batch size: (32 x 2) and labels batch #: (32 x 1)
                 if n_gpu > 1:
                     loss = loss.mean() # mean() to average on multi-gpu.
                 if args.gradient_accumulation_steps > 1:
@@ -666,10 +680,10 @@ def main():
                 else:
                     loss.backward()
 
-                tr_loss += loss.item()
-                nb_tr_examples += input_ids.size(0)
-                nb_tr_steps += 1
-                if (step + 1) % args.gradient_accumulation_steps == 0:
+                tr_loss += loss.item() # adds total loss
+                nb_tr_examples += input_ids.size(0) # adds 32 examples to count total examples
+                nb_tr_steps += 1 #
+                if (step + 1) % args.gradient_accumulation_steps == 0: # when the # steps reaches time to optimize gradient
                     if args.fp16:
                         # modify learning rate with special warm up BERT uses
                         # if args.fp16 is False, BertAdam is used that handles this automatically
@@ -677,11 +691,11 @@ def main():
                                                                                  args.warmup_proportion)
                         for param_group in optimizer.param_groups:
                             param_group['lr'] = lr_this_step
-                    optimizer.step()
-                    optimizer.zero_grad()
+                    optimizer.step() # adjust the parameters by the gradients collected in the backward pass
+                    optimizer.zero_grad() # reset the gradients of model parameters after each pass
                     global_step += 1
             print("Training loss: ", tr_loss, nb_tr_examples)
-
+# Loss 1 epoch: 16.94.
     if args.do_train and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
         # Save a trained model, configuration and tokenizer
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
@@ -690,7 +704,7 @@ def main():
         output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
         output_config_file = os.path.join(args.output_dir, CONFIG_NAME)
 
-        torch.save(model_to_save.state_dict(), output_model_file)
+        torch.save(model_to_save.state_dict(), output_model_file) # saves our trained model to pytorch_model.bin
         model_to_save.config.to_json_file(output_config_file)
         tokenizer.save_vocabulary(args.output_dir)
 
@@ -725,7 +739,7 @@ def main():
         tokenizer = BertTokenizer.from_pretrained(args.output_dir, do_lower_case=args.do_lower_case)
         model.to(device)
 
-        model.eval()
+        model.eval() # sets the model layers for evaluation
         eval_loss = 0
         nb_eval_steps = 0
         preds = []
@@ -736,7 +750,7 @@ def main():
             segment_ids = segment_ids.to(device)
             label_ids = label_ids.to(device)
 
-            with torch.no_grad():
+            with torch.no_grad(): #reduce memory usage and speed up computations but you won’t be able to backprop
                 logits = model(input_ids, segment_ids, input_mask, labels=None)
 
             # create eval loss and other metric required by the task
@@ -747,7 +761,7 @@ def main():
             eval_loss += tmp_eval_loss.mean().item()
             nb_eval_steps += 1
             if len(preds) == 0:
-                preds.append(logits.detach().cpu().numpy())
+                preds.append(logits.detach().cpu().numpy()) # converting to regular array lists to store loss
             else:
                 preds[0] = np.append(
                     preds[0], logits.detach().cpu().numpy(), axis=0)
@@ -755,14 +769,14 @@ def main():
         eval_loss = eval_loss / nb_eval_steps
         preds = preds[0]
 
-        preds = np.argmax(preds, axis=1)
+        preds = np.argmax(preds, axis=1) # finds the max element in each row
         result = compute_metrics(task_name, preds, all_label_ids.numpy())
         loss = tr_loss/nb_tr_steps if args.do_train else None
 
         result['eval_loss'] = eval_loss
         result['global_step'] = global_step
         result['loss'] = loss
-
+        # We are documenting the loss for that evaluation
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
         with open(output_eval_file, "w") as writer:
             logger.info("***** Eval results *****")
@@ -835,7 +849,7 @@ def main():
 
         preds = np.argmax(preds, axis=1)
 
-        result = compute_metrics(task_name, preds, all_label_ids)
+        result = compute_metrics(task_name, preds, all_label_ids) # USes simple accuracy: Finds proportion of correct preds
         loss = tr_loss/nb_tr_steps if args.do_train else None
 
         result['eval_loss'] = eval_loss
@@ -902,7 +916,7 @@ def main():
                     hits_right[hits_level].append(0.0)
     
         '''
-        for test_triple in test_triples:
+        for test_triple in test_triples: # run through each tuple in test set
             head = test_triple[0]
             relation = test_triple[1]
             tail = test_triple[2]
@@ -911,12 +925,12 @@ def main():
             head_corrupt_list = [test_triple]
             for corrupt_ent in entity_list:
                 if corrupt_ent != head:
-                    tmp_triple = [corrupt_ent, relation, tail]
+                    tmp_triple = [corrupt_ent, relation, tail] # creating tuples that replace the truth head
                     tmp_triple_str = '\t'.join(tmp_triple)
                     if tmp_triple_str not in all_triples_str_set:
                         # may be slow
                         head_corrupt_list.append(tmp_triple)
-
+            # since we are in test, we wont corrupt examples, we did that above!
             tmp_examples = processor._create_examples(head_corrupt_list, "test", args.data_dir)
             print(len(tmp_examples))
             tmp_features = convert_examples_to_features(tmp_examples, label_list, args.max_seq_length, tokenizer, print_info = False)
@@ -926,7 +940,7 @@ def main():
             all_label_ids = torch.tensor([f.label_id for f in tmp_features], dtype=torch.long)
 
             eval_data = TensorDataset(all_input_ids, all_input_mask, all_segment_ids, all_label_ids)
-            # Run prediction for temp data
+            # Run prediction for temp data, each tuple is corrupted with head,
             eval_sampler = SequentialSampler(eval_data)
             eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
             model.eval()
@@ -934,7 +948,7 @@ def main():
             preds = []
             
             for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Testing"):
-
+                # loop through and update loss for each batch
                 input_ids = input_ids.to(device)
                 input_mask = input_mask.to(device)
                 segment_ids = segment_ids.to(device)
@@ -948,25 +962,26 @@ def main():
 
                 else:
                     batch_logits = logits.detach().cpu().numpy()
-                    preds[0] = np.append(preds[0], batch_logits, axis=0)       
+                    preds[0] = np.append(preds[0], batch_logits, axis=0) # adds 32(batch_size) new rows each time
 
             preds = preds[0]
             # get the dimension corresponding to current label 1
-            #print(preds, preds.shape)
-            rel_values = preds[:, all_label_ids[0]]
+            # print("Preds: " + preds, preds.shape)
+            rel_values = preds[:, all_label_ids[0]] # get all in column 1: corrupt logits
             rel_values = torch.tensor(rel_values)
-            #print(rel_values, rel_values.shape)
-            _, argsort1 = torch.sort(rel_values, descending=True)
+            # print("rel_values: " + rel_values, rel_values.shape)
+            _, argsort1 = torch.sort(rel_values, descending=True) # sort from largest to smallest
             #print(max_values)
             #print(argsort1)
             argsort1 = argsort1.cpu().numpy()
-            rank1 = np.where(argsort1 == 0)[0][0]
+            rank1 = np.where(argsort1 == 0)[0][0] # get the highest
             print('left: ', rank1)
             ranks.append(rank1+1)
             ranks_left.append(rank1+1)
             if rank1 < 10:
                 top_ten_hit_count += 1
 
+            #Now do same thing for tail corruption
             tail_corrupt_list = [test_triple]
             for corrupt_ent in entity_list:
                 if corrupt_ent != tail:
